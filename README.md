@@ -11,20 +11,20 @@ End-to-end data engineering pipeline on **Azure Databricks** — ingesting raw p
 ```mermaid
 graph LR
     subgraph Source
-        A[(ADLS Gen2<br/>Bronze Container)]
+        A[(ADLS Gen2 - Bronze)]
     end
 
-    subgraph Phase 4 — Bronze to Silver
+    subgraph Phase 4 - Bronze to Silver
         A -->|Auto Loader| B[bronze_purchase_orders]
         A -->|Auto Loader| C[bronze_goods_receipts]
         B -->|DLT Expectations| D[silver_purchase_orders]
         C -->|DLT Expectations| E[silver_goods_receipts]
     end
 
-    subgraph Phase 5 — Silver to Gold
-        D --> F["dim_supplier (SCD Type 1)"]
+    subgraph Phase 5 - Silver to Gold
+        D --> F["dim_supplier - SCD1"]
         E --> F
-        D --> G["dim_material (SCD Type 2)"]
+        D --> G["dim_material - SCD2"]
         E --> G
         D --> H[fact_goods_receipts]
         E --> H
@@ -32,14 +32,14 @@ graph LR
         G -->|material_sk| H
     end
 
-    subgraph Phase 6 — Orchestration
+    subgraph Phase 6 - Orchestration
         I[Databricks Workflow] -->|Task 1| J[Bronze to Silver DLT]
         J -->|on success| K[Silver to Gold DLT]
         K -->|on success| L[Validate Gold Notebook]
         L -->|on failure| M[Email Alert]
     end
 
-    subgraph Phase 7 — Observability
+    subgraph Phase 7 - Observability
         N[Unity Catalog Lineage]
         O[Delta Time Travel]
         P[DLT Event Log]
@@ -47,7 +47,7 @@ graph LR
     end
 ```
 
-## Star Schema — Gold Layer
+## Star Schema - Gold Layer
 
 ```mermaid
 erDiagram
