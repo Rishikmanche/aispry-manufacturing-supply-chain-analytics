@@ -2,56 +2,92 @@
 
 End-to-end data engineering pipeline on **Azure Databricks** — ingesting raw procurement data from ADLS Gen2, transforming it through a medallion architecture, and delivering a production-grade star schema with SCD Type 2 history tracking.
 
+- **Domain:** Procurement — Purchase Orders & Goods Receipts
+- **Volume:** 10,000+ records
+- **Catalog:** `procurement_db` · schemas: `bronze` · `silver` · `gold`
+
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        AZURE DATABRICKS WORKSPACE                         │
-│                                                                           │
-│  ┌──────────┐    Delta Live Tables     ┌──────────┐    Delta Live Tables  │
-│  │  ADLS    │    ┌───────────────┐     │  SILVER  │    ┌──────────────┐   │
-│  │  Gen2    │───▶│  Auto Loader  │────▶│  Layer   │───▶│ apply_changes│   │
-│  │ (Bronze) │    │  + DLT        │     │          │    │ + SCD Type 2 │   │
-│  └──────────┘    │  Expectations │     └──────────┘    └──────┬───────┘   │
-│                  └───────────────┘                            │           │
-│   Phase 4                                Phase 5             ▼           │
-│   ─ bronze_purchase_orders               ─ dim_supplier    ┌──────────┐  │
-│   ─ bronze_goods_receipts                  (SCD Type 1)    │   GOLD   │  │
-│   ─ silver_purchase_orders               ─ dim_material    │  Star    │  │
-│   ─ silver_goods_receipts                  (SCD Type 2)    │  Schema  │  │
-│                                          ─ fact_goods_     └──────────┘  │
-│                                            receipts                      │
-│                                                                           │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │ Phase 6: Orchestration          │ Phase 7: Observability          │   │
-│  │ ─ 3-task Workflow (DAG)         │ ─ Unity Catalog Lineage         │   │
-│  │ ─ Cron: 2:00 AM IST daily      │ ─ Delta Time Travel             │   │
-│  │ ─ Email alerts on failure       │ ─ DLT Event Log                 │   │
-│  │ ─ Validation notebook gate      │ ─ SQL Alerts                    │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph Source
+        A[(ADLS Gen2<br/>Bronze Container)]
+    end
+
+    subgraph Phase 4 — Bronze to Silver
+        A -->|Auto Loader| B[bronze_purchase_orders]
+        A -->|Auto Loader| C[bronze_goods_receipts]
+        B -->|DLT Expectations| D[silver_purchase_orders]
+        C -->|DLT Expectations| E[silver_goods_receipts]
+    end
+
+    subgraph Phase 5 — Silver to Gold
+        D --> F["dim_supplier (SCD Type 1)"]
+        E --> F
+        D --> G["dim_material (SCD Type 2)"]
+        E --> G
+        D --> H[fact_goods_receipts]
+        E --> H
+        F -->|supplier_sk| H
+        G -->|material_sk| H
+    end
+
+    subgraph Phase 6 — Orchestration
+        I[Databricks Workflow] -->|Task 1| J[Bronze to Silver DLT]
+        J -->|on success| K[Silver to Gold DLT]
+        K -->|on success| L[Validate Gold Notebook]
+        L -->|on failure| M[Email Alert]
+    end
+
+    subgraph Phase 7 — Observability
+        N[Unity Catalog Lineage]
+        O[Delta Time Travel]
+        P[DLT Event Log]
+        Q[SQL Alerts]
+    end
 ```
 
-## Star Schema (Gold Layer)
+## Star Schema — Gold Layer
 
-```
-  ┌───────────────────┐          ┌───────────────────────────┐          ┌───────────────────┐
-  │   dim_supplier    │          │    fact_goods_receipts     │          │   dim_material     │
-  │   (SCD Type 1)    │          │                           │          │   (SCD Type 2)     │
-  ├───────────────────┤          ├───────────────────────────┤          ├───────────────────┤
-  │ supplier_id  (PK) │◀─────── │ supplier_sk  (FK)         │ ───────▶│ material_id  (PK) │
-  │ po_id              │          │ material_sk  (FK)         │          │ unit_of_measure    │
-  │ plant_id           │          │ gr_sk  (PK)               │          │ unit_price         │
-  │ unit_of_measure    │          │ gr_id                     │          │ __START_AT         │
-  │ unit_price         │          │ po_id                     │          │ __END_AT           │
-  │ _silver_ts         │          │ quantity_received         │          │ _silver_ts         │
-  │ _gold_ts           │          │ quantity_rejected         │          │ _gold_ts           │
-  └───────────────────┘          │ quantity_accepted         │          └───────────────────┘
-                                  │ unit_price                │
-                                  │ total_value               │
-                                  │ receipt_date              │
-                                  │ _gold_ts                  │
-                                  └───────────────────────────┘
+```mermaid
+erDiagram
+    dim_supplier ||--o{ fact_goods_receipts : "supplier_sk"
+    dim_material ||--o{ fact_goods_receipts : "material_sk"
+
+    dim_supplier {
+        string supplier_id PK
+        string po_id
+        string plant_id
+        string unit_of_measure
+        double unit_price
+        timestamp _silver_ts
+        timestamp _gold_ts
+    }
+
+    fact_goods_receipts {
+        long gr_sk PK
+        string gr_id
+        string po_id
+        long supplier_sk FK
+        long material_sk FK
+        double quantity_received
+        double quantity_rejected
+        double quantity_accepted
+        double unit_price
+        double total_value
+        date receipt_date
+        timestamp _gold_ts
+    }
+
+    dim_material {
+        string material_id PK
+        string unit_of_measure
+        double unit_price
+        timestamp __START_AT
+        timestamp __END_AT
+        timestamp _silver_ts
+        timestamp _gold_ts
+    }
 ```
 
 ## Project Structure
@@ -95,7 +131,7 @@ End-to-end data engineering pipeline on **Azure Databricks** — ingesting raw p
 - **37 Delta versions** tracked with time travel capability
 - **Automated failure detection** — validation notebook blocks bad data from reaching Gold
 
-## Phases Breakdown
+## Phases
 
 | Phase | Focus | Notebook |
 |-------|-------|----------|
